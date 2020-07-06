@@ -1,48 +1,52 @@
 # TODO:
-# 1. Need to load in histograms, not currently doing
-# 2. Problem: most crops will not have the mask within them
-# 3. Loss: L1, try perceptual or ssim
-# 4. Validation metric
-# 5. How to use scheduler right
-# 6. Use tensorboard to get preview images
+# Check perceptual loss in correct
 
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import torch.nn.functional as F
+from torchvision import models
 
 import os
 from torch.utils.tensorboard import SummaryWriter
 from torch.utils.data import DataLoader, random_split
 from tqdm import tqdm
+from piq import SSIMLoss
+from lpips import PerceptualLoss
 
-from unet import UNet
-from dataset import IHarmDataset, get_preprocessing, get_augmentation
+from unet import UNet, HistNet
+from dataset import IHarmDataset, get_train_preprocessing, get_augmentation
 from utils import MovingAverage
 
-def evaluate(net, loader, device):
+torch.manual_seed(3)
+np.random.seed(3)
+
+def eval(net, loader, device):
     net.eval()
     total_loss = 0
-    n_val = len(loader)
+    nval = len(loader)
 
-    for batch in loader:
-        x = torch.cat([batch["comp"], batch["mask"], batch["hist"]], dim=1)
-        x = x.to(device)
+    with tqdm(loader, desc='Val', leave=True) as pbar:
+        for batch in pbar:
+            c = batch["comp"].float().to(device)
+            m = batch["mask"].float().to(device)
+            h = batch["hist"].float().to(device)
+            y = batch["real"].float().to(device)
 
-        with torch.no_grad():
-            pred = net(x)
+            with torch.no_grad():
+                pred = net(c, m, h)
 
-        y = batch["real"]
-        y = y.to(device)
+            total_loss += F.l1_loss(pred, y)
+            pbar.update()
 
     net.train()
-    return 
+    return total_loss / nval
 
 
-def train(net, device, epochs, batch_size, lr, num_workers, save_cp):
-
+def train(net, device, epochs, batch_size, lr, num_workers, save_cp, checkpoint_name):
     dataroot = "../image_harmonization/HAdobe5k/"
-    preprocessing = get_preprocessing()
+    preprocessing = get_train_preprocessing()
     augmentation = get_augmentation()
     dataset = IHarmDataset(dataroot, preprocessing, augmentation)
 
@@ -52,51 +56,66 @@ def train(net, device, epochs, batch_size, lr, num_workers, save_cp):
     val_loader = DataLoader(val, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True)
 
     optimizer = optim.Adam(net.parameters(), lr=lr)
-    scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.1)
+    # scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=3, gamma=0.1)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=1)
 
-    # criterion_style = StyleLoss(layers=("relu3_3"))
     criterion_l1 = nn.L1Loss() 
-    # criterion_ssim = SSIMLoss(data_range=1.)
+    # criterion_ssim = SSIMLoss()
+    criterion_lpips = PerceptualLoss(
+            model='net-lin', net='alex', use_gpu=(device != "cpu"), gpu_ids=[0])
 
     writer = SummaryWriter()
+    avg_l1 = MovingAverage()
+    avg_ssim = MovingAverage()
+    avg_style = MovingAverage()
     avg_loss = MovingAverage()
     n_iter = 0
+
+    print("val test")
+    val_score = eval(net, val_loader, device)
 
     for epoch in range(epochs):
         net.train()
 
         pbar = tqdm(train_loader)
         for batch in pbar:
-            c, m, h = batch["comp"], batch["mask"], batch["hist"]
-            pred = net(c.to(device), m.to(device), h.to(device))
+            c = batch["comp"].float().to(device)
+            m = batch["mask"].float().to(device)
+            h = batch["hist"].float().to(device)
+            y = batch["real"].float().to(device)
 
-            y = batch["real"]
-            y = y.to(device)
+            pred = net(c, m, h)
 
-            loss = criterion_l1(pred, y)
-            # loss_ssim = criterion_ssim(pred, y)
-            # loss_style = criterion_style(pred, y)
-            # losses = [loss_l1, loss_style]
-            # loss = torch.sum(losses)
+            loss_l1 = criterion_l1(pred, y)
+            loss_ssim = torch.tensor(0, requires_grad=True, device=device, dtype=torch.float)
+            loss_style = criterion_lpips.forward(pred, y, normalize=True).mean()
+            loss = loss_l1 + loss_ssim + loss_style
 
             optimizer.zero_grad()
             loss.backward()
             nn.utils.clip_grad_value_(net.parameters(), 0.1)
             optimizer.step()
 
-            _loss = loss.item()
+            _loss, _l1, _ssim, _style = loss.item(), loss_l1.item(), loss_ssim.item(), loss_style.item()
+            avg_l1.update(_l1)
+            avg_ssim.update(_ssim)
+            avg_style.update(_style)
             avg_loss.update(_loss)
-            pbar.set_description(f'Loss: {_loss}')
-            writer.add_scalar('L1/Train', _loss, n_iter)
-
+            pbar.set_description(f'SSIM: {avg_ssim.get()}, L1: {avg_l1.get()}, Style: {avg_style.get()}')
+            writer.add_scalar('Loss/Train', _loss, n_iter)
+            writer.add_scalar('SSIM/Train', _ssim, n_iter)
+            writer.add_scalar('L1/Train', _l1, n_iter)
+            writer.add_scalar('Style/Train', _style, n_iter)
             n_iter += 1
 
-        scheduler.step()
+        # Calcuate validation
+        val_score = eval(net, val_loader, device)
+        scheduler.step(val_score)
 
         if save_cp:
             if not os.path.exists("checkpoints"):
                 os.mkdir("checkpoints")
-            path = "{}/cp_masked_epoch_{}.pth".format("checkpoints", epoch+1)
+            path = "{}/cp_{}_epoch_{}.pth".format("checkpoints", checkpoint_name, epoch+1)
             torch.save(net.state_dict(), path)
 
     writer.close()
@@ -107,18 +126,17 @@ if __name__ == '__main__':
     device = "cuda:0" if torch.cuda.is_available() else "cpu"
     epochs = 10
     batch_size = 8
-    learning_rate = 0.1
+    learning_rate = 3e-4
     num_workers = 4
     save_checkpoint = True
-    init_checkpoint = "checkpoints/cp_best_l1_ssim.pth"
+    init_checkpoint = "checkpoints/cp_HistNet_identity.pth" 
+    checkpoint_name = "HistNet"
 
-    net = UNet(n_channels=7, n_classes=3).to(device)
-    net.load_state_dict(torch.load(init_checkpoint))
+    # net = UNet(n_channels=7, n_classes=3).to(device)
+    net = HistNet().to(device)
 
-    try:
-        train(net, device, epochs, batch_size, learning_rate, num_workers, save_checkpoint)
-    except KeyboardInterrupt:
-        if not os.path.exists("checkpoints"):
-            os.mkdir("checkpoints")
-        path = "{}/cp_epoch_{}.pth".format("checkpoints", "keyboard")
-        torch.save(net.state_dict(), path)
+    if init_checkpoint is not None:
+        net.load_state_dict(torch.load(init_checkpoint))
+
+    print("Training! Checkpoint: {}, Device: {}".format(device, init_checkpoint)
+    train(net, device, epochs, batch_size, learning_rate, num_workers, save_checkpoint, checkpoint_name)
