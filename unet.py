@@ -81,7 +81,7 @@ class UNet(nn.Module):
         self.up4 = Up(128, 64)   # 128 = 64 from up3 + 64 from inc
 
         self.outc = OutConv(64, n_classes)
-        self.sigmoid = nn.Sigmoid()
+        self.tanh = nn.Tanh()
 
 
     def forward(self, comp, mask, hist):
@@ -101,7 +101,7 @@ class UNet(nn.Module):
         x = self.up3(x, x2)
         x = self.up4(x, x1)
         x = self.outc(x)
-        x = self.sigmoid(x)
+        x = self.tanh(x)
 
         # Only apply changes to masked region
         return (1 - mask) * comp + mask * x
@@ -132,7 +132,7 @@ class HistNet(nn.Module):
         self.up4 = Up(128 + 3, 64)
 
         self.outc = nn.Conv2d(64, 3, kernel_size=1)
-        self.sigmoid = nn.Sigmoid()
+        self.tanh = nn.Tanh()
 
 
     def forward(self, comp, mask, hist):
@@ -152,10 +152,10 @@ class HistNet(nn.Module):
         x = self.up3(x, inject(x2, hist))
         x = self.up4(x, inject(x1, hist))
         x = self.outc(x)
-        x = self.sigmoid(x)
 
         # Learn the residual, preserves fine-details!
         x = x + comp
+        x = self.tanh(x)
 
         # Only apply changes to masked region
         return (1 - mask) * comp + mask * x

@@ -14,6 +14,7 @@ from torch.utils.data import DataLoader, random_split
 from tqdm import tqdm
 from piq import SSIMLoss
 from lpips import PerceptualLoss
+from poisson import PoissonLoss
 
 from unet import UNet, HistNet
 from dataset import IHarmDataset, get_train_preprocessing, get_augmentation
@@ -61,12 +62,13 @@ def train(net, device, epochs, batch_size, lr, num_workers, save_cp, checkpoint_
 
     criterion_l1 = nn.L1Loss() 
     # criterion_ssim = SSIMLoss()
+    criterion_poisson = PoissonLoss(device)
     criterion_lpips = PerceptualLoss(
             model='net-lin', net='alex', use_gpu=(device != "cpu"), gpu_ids=[0])
 
     writer = SummaryWriter()
     avg_l1 = MovingAverage()
-    avg_ssim = MovingAverage()
+    avg_poisson = MovingAverage()
     avg_style = MovingAverage()
     avg_loss = MovingAverage()
     n_iter = 0
@@ -87,23 +89,23 @@ def train(net, device, epochs, batch_size, lr, num_workers, save_cp, checkpoint_
             pred = net(c, m, h)
 
             loss_l1 = criterion_l1(pred, y)
-            loss_ssim = torch.tensor(0, requires_grad=True, device=device, dtype=torch.float)
-            loss_style = criterion_lpips.forward(pred, y, normalize=True).mean()
-            loss = loss_l1 + loss_ssim + loss_style
+            loss_poisson = 1e2 * criterion_poisson.forward(pred, y)
+            loss_style = criterion_lpips.forward(pred, y).mean()
+            loss = loss_l1 + loss_poisson + loss_style
 
             optimizer.zero_grad()
             loss.backward()
             nn.utils.clip_grad_value_(net.parameters(), 0.1)
             optimizer.step()
 
-            _loss, _l1, _ssim, _style = loss.item(), loss_l1.item(), loss_ssim.item(), loss_style.item()
+            _loss, _l1, _poisson, _style = loss.item(), loss_l1.item(), loss_poisson.item(), loss_style.item()
             avg_l1.update(_l1)
-            avg_ssim.update(_ssim)
+            avg_poisson.update(_poisson)
             avg_style.update(_style)
             avg_loss.update(_loss)
-            pbar.set_description(f'SSIM: {avg_ssim.get()}, L1: {avg_l1.get()}, Style: {avg_style.get()}')
+            pbar.set_description(f'Poisson: {avg_poisson.get()}, L1: {avg_l1.get()}, Style: {avg_style.get()}')
             writer.add_scalar('Loss/Train', _loss, n_iter)
-            writer.add_scalar('SSIM/Train', _ssim, n_iter)
+            writer.add_scalar('Poisson/Train', _poisson, n_iter)
             writer.add_scalar('L1/Train', _l1, n_iter)
             writer.add_scalar('Style/Train', _style, n_iter)
             n_iter += 1
@@ -138,5 +140,5 @@ if __name__ == '__main__':
     if init_checkpoint is not None:
         net.load_state_dict(torch.load(init_checkpoint))
 
-    print("Training! Checkpoint: {}, Device: {}".format(device, init_checkpoint)
+    print("Training! Checkpoint: {}, Device: {}".format(device, init_checkpoint))
     train(net, device, epochs, batch_size, learning_rate, num_workers, save_checkpoint, checkpoint_name)

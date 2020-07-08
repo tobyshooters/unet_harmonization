@@ -32,7 +32,7 @@ def get_augmentation():
 def get_train_preprocessing():
     transforms = [
         albu.RandomSizedCrop((256, 1024), height=512, width=512),
-        albu.Normalize(mean=(0, 0, 0), std=(1, 1, 1)),
+        albu.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5)),
         ToTensorV2(),
     ]
     return albu.Compose(transforms,
@@ -41,7 +41,7 @@ def get_train_preprocessing():
 
 def get_inference_preprocessing():
     transforms = [
-        albu.Normalize(mean=(0, 0, 0), std=(1, 1, 1)),
+        albu.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5)),
         ToTensorV2(),
     ]
     return albu.Compose(transforms,
