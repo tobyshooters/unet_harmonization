@@ -6,6 +6,15 @@ from torch.utils.data import Dataset
 import albumentations as albu
 from albumentations.pytorch import ToTensorV2
 
+
+def post(im):
+    im_ = np.transpose(im, (2, 1, 0))
+    im_ = 0.5 * (im_ + 1)
+    im_ = (255 * im_).astype(np.uint8)
+    im_ = cv2.cvtColor(im_, cv2.COLOR_LAB2BGR)
+    return im_
+
+
 def get_augmentation():
     transforms = [
         albu.HorizontalFlip(p=0.5),

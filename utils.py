@@ -2,14 +2,6 @@ import statistics
 import torch
 import torch.nn.functional as F
 
-def gram_matrix(y):
-    (b, ch, h, w) = y.size()
-    features = y.view(b, ch, w * h)
-    features_t = features.transpose(1, 2)
-    gram = features.bmm(features_t) / (ch * h * w)
-    return gram
-
-
 class MovingAverage(object):
     def __init__(self, n=100):
         self.sum = 0
@@ -23,6 +15,14 @@ class MovingAverage(object):
 
     def get(self):
         return round(statistics.mean(self.buffer), 5)
+
+
+def gram_matrix(y):
+    (b, ch, h, w) = y.size()
+    features = y.view(b, ch, w * h)
+    features_t = features.transpose(1, 2)
+    gram = features.bmm(features_t) / (ch * h * w)
+    return gram
 
 
 def normalize_batch(batch):

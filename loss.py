@@ -1,7 +1,28 @@
+import torch
+import torch.nn as nn
+import numpy as np
+
+class PoissonLoss():
+    def __init__(self, device):
+        w = np.array([[0, -1, 0],[-1, 4, -1],[0, -1, 0]])
+        w_tensor = torch.from_numpy(w).float().view(1, 1, 3, 3).to(device)
+
+        self.L = nn.Conv2d(1, 1, kernel_size=3, stride=1, padding=1, bias=False)
+        self.L.weight = nn.Parameter(w_tensor)
+        for param in self.L.parameters():
+            param.requires_grad = False
+
+    def forward(self, pred, y):
+        loss = 0
+        for i in range(3):
+            Lp = self.L(pred[:,i,:,:].unsqueeze(1))
+            Ly = self.L(y[:,i,:,:].unsqueeze(1))
+            loss += ((Lp - Ly)**2).mean()
+        return loss / 3
+
+
 # Not used: LPIPS is easier...
-
 class StyleLoss():
-
     def __init__(self, device):
         vgg = models.vgg16(pretrained=True).features
         for param in vgg.parameters():
@@ -47,4 +68,3 @@ class StyleLoss():
             style_loss += ((gm_pred - gm_gt)**2).mean()
 
         return style_loss
-

@@ -1,32 +1,32 @@
-# TODO:
-# Check perceptual loss in correct
-
+import os
+import cv2
 import numpy as np
+
 import torch
 import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
 from torchvision import models
 
-import os
 from torch.utils.tensorboard import SummaryWriter
 from torch.utils.data import DataLoader, random_split
 from tqdm import tqdm
-from piq import SSIMLoss
-from lpips import PerceptualLoss
-from poisson import PoissonLoss
 
-from unet import UNet, HistNet
-from dataset import IHarmDataset, get_train_preprocessing, get_augmentation
+from unet import UNet, AttentionUNet, HistNet
+from dataset import IHarmDataset, get_train_preprocessing, get_augmentation, post
 from utils import MovingAverage
+from lpips import PerceptualLoss
+from loss import PoissonLoss
 
 torch.manual_seed(3)
 np.random.seed(3)
 
-def eval(net, loader, device):
+def eval(net, loader, device, checkpoint_name, epoch=0):
     net.eval()
     total_loss = 0
     nval = len(loader)
+
+    saved_images = []
 
     with tqdm(loader, desc='Val', leave=True) as pbar:
         for batch in pbar:
@@ -41,6 +41,19 @@ def eval(net, loader, device):
             total_loss += F.l1_loss(pred, y)
             pbar.update()
 
+            if len(saved_images) < 10:
+                for i in range(c.shape[0]):
+                    c_i = post(c.detach().cpu().numpy()[i])
+                    pred_i = post(pred.detach().cpu().numpy()[i])
+                    y_i = post(y.detach().cpu().numpy()[i])
+                    saved_images.append(np.vstack([c_i, pred_i, y_i]))
+
+        pbar.set_description(f'Validation Loss: {total_loss / nval}')
+        
+    results = np.hstack(saved_images)
+    cv2.imwrite("checkpoints/cp_{}_epoch_{}.jpg".format(checkpoint_name, epoch), results)
+
+
     net.train()
     return total_loss / nval
 
@@ -51,7 +64,7 @@ def train(net, device, epochs, batch_size, lr, num_workers, save_cp, checkpoint_
     augmentation = get_augmentation()
     dataset = IHarmDataset(dataroot, preprocessing, augmentation)
 
-    n_train = int(0.9 * len(dataset))
+    n_train = int(0.95 * len(dataset))
     train, val = random_split(dataset, [n_train, len(dataset) - n_train])
     train_loader = DataLoader(train, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=True)
     val_loader = DataLoader(val, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True)
@@ -73,8 +86,8 @@ def train(net, device, epochs, batch_size, lr, num_workers, save_cp, checkpoint_
     avg_loss = MovingAverage()
     n_iter = 0
 
-    print("val test")
-    val_score = eval(net, val_loader, device)
+    # print("Initial Validation")
+    # val_score = eval(net, val_loader, device, checkpoint_name)
 
     for epoch in range(epochs):
         net.train()
@@ -89,7 +102,7 @@ def train(net, device, epochs, batch_size, lr, num_workers, save_cp, checkpoint_
             pred = net(c, m, h)
 
             loss_l1 = criterion_l1(pred, y)
-            loss_poisson = 1e2 * criterion_poisson.forward(pred, y)
+            loss_poisson = 10 * criterion_poisson.forward(pred, y)
             loss_style = criterion_lpips.forward(pred, y).mean()
             loss = loss_l1 + loss_poisson + loss_style
 
@@ -111,7 +124,7 @@ def train(net, device, epochs, batch_size, lr, num_workers, save_cp, checkpoint_
             n_iter += 1
 
         # Calcuate validation
-        val_score = eval(net, val_loader, device)
+        val_score = eval(net, val_loader, device, checkpoint_name, epoch+1)
         scheduler.step(val_score)
 
         if save_cp:
@@ -131,14 +144,15 @@ if __name__ == '__main__':
     learning_rate = 3e-4
     num_workers = 4
     save_checkpoint = True
-    init_checkpoint = "checkpoints/cp_HistNet_identity.pth" 
-    checkpoint_name = "HistNet"
+    init_checkpoint = None
+    checkpoint_name = "AttentionUNet"
 
     # net = UNet(n_channels=7, n_classes=3).to(device)
-    net = HistNet().to(device)
+    # net = HistNet().to(device)
+    net = AttentionUNet(n_channels=7, n_classes=3).to(device)
 
     if init_checkpoint is not None:
         net.load_state_dict(torch.load(init_checkpoint))
 
-    print("Training! Checkpoint: {}, Device: {}".format(device, init_checkpoint))
+    print("Training! Checkpoint: {}, Device: {}".format(init_checkpoint, device))
     train(net, device, epochs, batch_size, learning_rate, num_workers, save_checkpoint, checkpoint_name)

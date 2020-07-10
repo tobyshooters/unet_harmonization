@@ -1,5 +1,6 @@
 # Fully-convolutional U-net for arbitrary input sizes
-# Forked from https://github.com/milesial/Pytorch-UNet
+# Based on https://github.com/milesial/Pytorch-UNet
+# Based on https://github.com/LeeJunHyun/Image_Segmentation
 
 import torch
 import torch.nn as nn
@@ -63,11 +64,16 @@ class OutConv(nn.Module):
 
 
 class UNet(nn.Module):
-    def __init__(self, n_channels, n_classes, bilinear=True):
+    # Since bilinear upsampling preserves number of channels,
+    # we must decrease number of channels in the double convolution.
+    # Were we to use ConvTranpose, the channels would be reduced
+    # while upsampling, but before concatenating.
+    # (https://github.com/milesial/Pytorch-UNet/issues/69)k
+
+    def __init__(self, n_channels, n_classes):
         super(UNet, self).__init__()
         self.n_channels = n_channels
         self.n_classes = n_classes
-        self.bilinear = bilinear
 
         self.inc = DoubleConv(n_channels, 64)
         self.down1 = Down(64, 128)
@@ -103,19 +109,116 @@ class UNet(nn.Module):
         x = self.outc(x)
         x = self.tanh(x)
 
-        # Only apply changes to masked region
-        return (1 - mask) * comp + mask * x
+        # Learn the residual
+        return comp + mask * x
 
 
-# Learn just the residual
-# Do everything in LAB-space
-# Inject histogram
+class Attention(nn.Module):
+    """Attention module for a U-net"""
+
+    def __init__(self, Fg, Fl, Fi):
+        # gate, layer, intermediate
+        super(Attention, self).__init__()
+        self.Wg = nn.Sequential(
+            nn.Conv2d(Fg, Fi, kernel_size=1, stride=1, padding=0, bias=True),
+            nn.BatchNorm2d(Fi)
+        )
+        self.Wx = nn.Sequential(
+            nn.Conv2d(Fl, Fi, kernel_size=1, stride=1, padding=0, bias=True),
+            nn.BatchNorm2d(Fi)
+        )
+        self.psi = nn.Sequential(
+            nn.Conv2d(Fi, 1, kernel_size=1, stride=1, padding=0, bias=True),
+            nn.BatchNorm2d(1),
+            nn.Sigmoid()
+        )
+        self.relu = nn.ReLU(inplace=True)
+
+    def forward(self, x_up, x_skip):
+        g = self.Wg(x_up)
+        x = self.Wx(x_skip)
+        j = self.relu(g + x)
+        p = self.psi(j)
+        return p * x_skip
+
+
+class UpAttention(nn.Module):
+    """Upsamples input, gates the skip features, and concatenates"""
+
+    def __init__(self, up_channels, skip_channels, int_channels, out_channels):
+        super().__init__()
+        in_channels = up_channels + skip_channels
+        self.up = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
+        self.att = Attention(up_channels, skip_channels, int_channels)
+        self.conv = DoubleConv(in_channels, out_channels, in_channels // 2)
+
+    def forward(self, x_up, x_skip):
+        # Upsample
+        x_up = self.up(x_up)
+        x_att = self.att(x_up, x_skip)
+
+        # Pad and concatenate
+        diffY = x_att.size()[2] - x_up.size()[2]
+        diffX = x_att.size()[3] - x_up.size()[3]
+        x_up = F.pad(x_up, [diffX // 2, diffX - diffX // 2,
+                            diffY // 2, diffY - diffY // 2])
+        x = torch.cat([x_att, x_up], dim=1)
+
+        # Convolve
+        return self.conv(x)
+
+
+class AttentionUNet(nn.Module):
+    def __init__(self, n_channels, n_classes):
+        super(AttentionUNet, self).__init__()
+        self.n_channels = n_channels
+        self.n_classes = n_classes
+
+        self.inc = DoubleConv(n_channels, 64)
+        self.down1 = Down(64, 128)
+        self.down2 = Down(128, 256)
+        self.down3 = Down(256, 512)
+        self.down4 = Down(512, 512)
+
+        self.up1 = UpAttention(up_channels=512, skip_channels=512, int_channels=256, out_channels=256)
+        self.up2 = UpAttention(up_channels=256, skip_channels=256, int_channels=128, out_channels=128)
+        self.up3 = UpAttention(up_channels=128, skip_channels=128, int_channels=64,  out_channels=64)
+        self.up4 = UpAttention(up_channels=64,  skip_channels=64,  int_channels=32,  out_channels=64)
+
+        self.outc = OutConv(64, n_classes)
+        self.tanh = nn.Tanh()
+
+
+    def forward(self, comp, mask, hist):
+        # Compose into (batch x 7 x 512 x 512) input
+        x_in = torch.cat([comp, mask, hist], dim=1)
+
+        # Encoder
+        x1 = self.inc(x_in)
+        x2 = self.down1(x1)
+        x3 = self.down2(x2)
+        x4 = self.down3(x3)
+        x5 = self.down4(x4)
+
+        # Decoder
+        d5 = self.up1(x5, x4)
+        d4 = self.up2(d5, x3)
+        d3 = self.up3(d4, x2)
+        d2 = self.up4(d3, x1)
+        d1 = self.outc(d2)
+        x = self.tanh(d1)
+
+        # Learn the residual
+        return comp + mask * x
+
 
 def inject(layer, histogram):
     h = F.interpolate(histogram, layer.size()[2:], recompute_scale_factor=True)
     return torch.cat([layer, h], dim=1)
 
 class HistNet(nn.Module):
+    """Inject color at all levels, based on PaletteNet"""
+
     def __init__(self):
         super(HistNet, self).__init__()
 
