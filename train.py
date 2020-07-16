@@ -116,7 +116,7 @@ def train(net, device, epochs, batch_size, lr, num_workers, save_cp, checkpoint_
             # Loss
             loss_l1 = 1 * base_l1
             loss_poisson = 10 * criterion_poisson.forward(pred, y)
-            loss_style = 2 * criterion_lpips.forward(m * pred, m * y).mean()
+            loss_style = 2 * criterion_lpips.forward(pred, y).mean()
             loss = loss_l1 + loss_poisson + loss_style
 
             # Step

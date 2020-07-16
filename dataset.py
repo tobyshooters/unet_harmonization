@@ -8,7 +8,7 @@ from albumentations.pytorch import ToTensorV2
 
 
 def post(im, resize=None, bw=False, rotate=False, name=""):
-    im_ = np.transpose(im, (2, 1, 0))
+    im_ = np.transpose(im, (1, 2, 0))
     im_ = 0.5 * (im_ + 1)
     im_ = 255 * im_
     im_ = np.clip(im_, 0, 255)
@@ -21,12 +21,11 @@ def post(im, resize=None, bw=False, rotate=False, name=""):
         im_ = cv2.resize(im_, (resize, resize), cv2.INTER_LINEAR)
     if name != "":
         im_ = cv2.putText(im_, name, (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 3)
-    im_ = np.rot90(im_, k=3)
     return im_
 
 
 def runway_post(im):
-    im_ = np.transpose(im, (2, 1, 0))
+    im_ = np.transpose(im, (1, 2, 0))
     im_ = 0.5 * (im_ + 1)
     im_ = 255 * im_
     im_ = np.clip(im_, 0, 255)
