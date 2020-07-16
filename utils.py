@@ -2,6 +2,14 @@ import statistics
 import torch
 import torch.nn.functional as F
 
+def load_partial_state_dict(model, pretrained_dict):
+    model_dict = model.state_dict()
+    pretrained_dict = {k: v for k, v in pretrained_dict.items() if k in model_dict}
+    model_dict.update(pretrained_dict)
+    model.load_state_dict(model_dict)
+    return model
+
+
 class MovingAverage(object):
     def __init__(self, n=100):
         self.sum = 0

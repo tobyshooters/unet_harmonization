@@ -110,7 +110,7 @@ class UNet(nn.Module):
         x = self.tanh(x)
 
         # Learn the residual
-        return comp + mask * x
+        return { "output": comp + mask * x }
 
 
 class Attention(nn.Module):
@@ -134,12 +134,13 @@ class Attention(nn.Module):
         )
         self.relu = nn.ReLU(inplace=True)
 
-    def forward(self, x_up, x_skip):
+    def forward(self, x_up, x_skip, visualize=False):
         g = self.Wg(x_up)
         x = self.Wx(x_skip)
         j = self.relu(g + x)
         p = self.psi(j)
-        return p * x_skip
+        o = p * x_skip
+        return (o, p) if visualize else o
 
 
 class UpAttention(nn.Module):
@@ -152,10 +153,14 @@ class UpAttention(nn.Module):
         self.att = Attention(up_channels, skip_channels, int_channels)
         self.conv = DoubleConv(in_channels, out_channels, in_channels // 2)
 
-    def forward(self, x_up, x_skip):
+    def forward(self, x_up, x_skip, visualize=False):
         # Upsample
         x_up = self.up(x_up)
-        x_att = self.att(x_up, x_skip)
+
+        if visualize:
+            x_att, att_mask = self.att(x_up, x_skip, visualize=True)
+        else:
+            x_att = self.att(x_up, x_skip)
 
         # Pad and concatenate
         diffY = x_att.size()[2] - x_up.size()[2]
@@ -165,7 +170,9 @@ class UpAttention(nn.Module):
         x = torch.cat([x_att, x_up], dim=1)
 
         # Convolve
-        return self.conv(x)
+        output = self.conv(x)
+
+        return (output, att_mask) if visualize else output
 
 
 class AttentionUNet(nn.Module):
@@ -189,7 +196,7 @@ class AttentionUNet(nn.Module):
         self.tanh = nn.Tanh()
 
 
-    def forward(self, comp, mask, hist):
+    def forward(self, comp, mask, hist, visualize=False):
         # Compose into (batch x 7 x 512 x 512) input
         x_in = torch.cat([comp, mask, hist], dim=1)
 
@@ -201,15 +208,159 @@ class AttentionUNet(nn.Module):
         x5 = self.down4(x4)
 
         # Decoder
-        d5 = self.up1(x5, x4)
-        d4 = self.up2(d5, x3)
-        d3 = self.up3(d4, x2)
-        d2 = self.up4(d3, x1)
+        if visualize:
+            d5, att5 = self.up1(x5, x4, visualize=True)
+            d4, att4 = self.up2(d5, x3, visualize=True)
+            d3, att3 = self.up3(d4, x2, visualize=True)
+            d2, att2 = self.up4(d3, x1, visualize=True)
+        else:
+            d5 = self.up1(x5, x4)
+            d4 = self.up2(d5, x3)
+            d3 = self.up3(d4, x2)
+            d2 = self.up4(d3, x1)
+
         d1 = self.outc(d2)
         x = self.tanh(d1)
 
         # Learn the residual
-        return comp + mask * x
+        output = { "output": comp + mask * x }
+
+        if visualize:
+            output["attention"] = [att5, att4, att3, att2] 
+
+        return output
+
+
+class MaskAttentionUNet(nn.Module):
+    def __init__(self, n_channels, n_classes):
+        super(MaskAttentionUNet, self).__init__()
+        self.n_channels = n_channels
+        self.n_classes = n_classes
+
+        self.inc = DoubleConv(n_channels, 64)
+        self.down1 = Down(64, 128)
+        self.down2 = Down(128, 256)
+        self.down3 = Down(256, 512)
+        self.down4 = Down(512, 512)
+
+        self.up1 = UpAttention(up_channels=512, skip_channels=512, int_channels=256, out_channels=256)
+        self.up2 = UpAttention(up_channels=256, skip_channels=256, int_channels=128, out_channels=128)
+        self.up3 = UpAttention(up_channels=128, skip_channels=128, int_channels=64,  out_channels=64)
+        self.up4 = UpAttention(up_channels=64,  skip_channels=64,  int_channels=32,  out_channels=64)
+
+        self.outc = OutConv(64, n_classes)
+        self.tanh = nn.Tanh()
+
+        self.maskc = OutConv(64, 1)
+        self.sigmoid = nn.Sigmoid()
+
+
+    def forward(self, comp, mask, hist, visualize=False):
+        # Compose into (batch x 7 x 512 x 512) input
+        x_in = torch.cat([comp, mask, hist], dim=1)
+
+        # Encoder
+        x1 = self.inc(x_in)
+        x2 = self.down1(x1)
+        x3 = self.down2(x2)
+        x4 = self.down3(x3)
+        x5 = self.down4(x4)
+
+        # Decoder
+        if visualize:
+            d5, att5 = self.up1(x5, x4, visualize=True)
+            d4, att4 = self.up2(d5, x3, visualize=True)
+            d3, att3 = self.up3(d4, x2, visualize=True)
+            d2, att2 = self.up4(d3, x1, visualize=True)
+        else:
+            d5 = self.up1(x5, x4)
+            d4 = self.up2(d5, x3)
+            d3 = self.up3(d4, x2)
+            d2 = self.up4(d3, x1)
+
+        # Predicted output
+        d1 = self.outc(d2)
+        x = self.tanh(d1)
+
+        # Create mask
+        m = self.maskc(d2)
+        pred_mask = self.sigmoid(m)
+
+        # Outputs
+        output = { "output": comp + pred_mask * x }
+
+        if visualize:
+            output["attention"] = [att5, att4, att3, att2] 
+            output["pred_mask"] = pred_mask
+
+        return output
+
+
+class IHarmNet(nn.Module):
+    """ MaskAttentionUNet, without the hist input """
+
+    def __init__(self):
+        super(IHarmNet, self).__init__()
+        self.n_channels = 4
+        self.n_classes = 1
+
+        self.inc = DoubleConv(self.n_channels, 64)
+        self.down1 = Down(64, 128)
+        self.down2 = Down(128, 256)
+        self.down3 = Down(256, 512)
+        self.down4 = Down(512, 512)
+
+        self.up1 = UpAttention(up_channels=512, skip_channels=512, int_channels=256, out_channels=256)
+        self.up2 = UpAttention(up_channels=256, skip_channels=256, int_channels=128, out_channels=128)
+        self.up3 = UpAttention(up_channels=128, skip_channels=128, int_channels=64,  out_channels=64)
+        self.up4 = UpAttention(up_channels=64,  skip_channels=64,  int_channels=32,  out_channels=64)
+
+        self.outc = OutConv(64, self.n_classes)
+        self.tanh = nn.Tanh()
+
+        self.maskc = OutConv(64, 1)
+        self.sigmoid = nn.Sigmoid()
+
+
+    def forward(self, comp, mask, visualize=False):
+        # Compose into (batch x 4 x 512 x 512) input
+        x_in = torch.cat([comp, mask], dim=1)
+
+        # Encoder
+        x1 = self.inc(x_in)
+        x2 = self.down1(x1)
+        x3 = self.down2(x2)
+        x4 = self.down3(x3)
+        x5 = self.down4(x4)
+
+        # Decoder
+        if visualize:
+            d5, att5 = self.up1(x5, x4, visualize=True)
+            d4, att4 = self.up2(d5, x3, visualize=True)
+            d3, att3 = self.up3(d4, x2, visualize=True)
+            d2, att2 = self.up4(d3, x1, visualize=True)
+        else:
+            d5 = self.up1(x5, x4)
+            d4 = self.up2(d5, x3)
+            d3 = self.up3(d4, x2)
+            d2 = self.up4(d3, x1)
+
+        # Predicted output
+        d1 = self.outc(d2)
+        x = self.tanh(d1)
+
+        # Create mask
+        m = self.maskc(d2)
+        pred_mask = self.sigmoid(m)
+
+        # Outputs
+        output = { "output": comp + pred_mask * x }
+
+        if visualize:
+            output["attention"] = [att5, att4, att3, att2] 
+            output["pred_mask"] = pred_mask
+
+        return output
 
 
 def inject(layer, histogram):

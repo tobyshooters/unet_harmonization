@@ -2,6 +2,20 @@ import torch
 import torch.nn as nn
 import numpy as np
 
+class MaskedL1Loss():
+    """ Based on Sofiiuk et al. (https://arxiv.org/abs/2006.00809) """
+
+    def __init__(self, input_shape=(512, 512), min_area=100):
+        self.min_area = min_area
+        self.scale = input_shape[0] * input_shape[1]
+
+    def forward(self, pred, y, mask):
+        L1 = torch.mean(torch.abs(mask * (pred - y)), dim=(2, 3))
+        mask_area = torch.sum(mask, dim=(2, 3))
+        loss = L1 / torch.clamp_min(mask_area, self.min_area)
+        return self.scale * loss.mean()
+
+
 class PoissonLoss():
     def __init__(self, device):
         w = np.array([[0, -1, 0],[-1, 4, -1],[0, -1, 0]])

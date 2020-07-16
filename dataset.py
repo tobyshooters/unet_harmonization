@@ -7,11 +7,31 @@ import albumentations as albu
 from albumentations.pytorch import ToTensorV2
 
 
-def post(im):
+def post(im, resize=None, bw=False, rotate=False, name=""):
     im_ = np.transpose(im, (2, 1, 0))
     im_ = 0.5 * (im_ + 1)
-    im_ = (255 * im_).astype(np.uint8)
-    im_ = cv2.cvtColor(im_, cv2.COLOR_LAB2BGR)
+    im_ = 255 * im_
+    im_ = np.clip(im_, 0, 255)
+    im_ = im_.astype(np.uint8)
+    if not bw:
+        im_ = cv2.cvtColor(im_, cv2.COLOR_LAB2BGR)
+    if bw:
+        im_ = cv2.merge((im_, im_, im_))
+    if resize is not None:
+        im_ = cv2.resize(im_, (resize, resize), cv2.INTER_LINEAR)
+    if name != "":
+        im_ = cv2.putText(im_, name, (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 3)
+    im_ = np.rot90(im_, k=3)
+    return im_
+
+
+def runway_post(im):
+    im_ = np.transpose(im, (2, 1, 0))
+    im_ = 0.5 * (im_ + 1)
+    im_ = 255 * im_
+    im_ = np.clip(im_, 0, 255)
+    im_ = im_.astype(np.uint8)
+    im_ = cv2.cvtColor(im_, cv2.COLOR_LAB2RGB)
     return im_
 
 
@@ -40,7 +60,7 @@ def get_augmentation():
 
 def get_train_preprocessing():
     transforms = [
-        albu.RandomSizedCrop((256, 1024), height=512, width=512),
+        albu.RandomSizedCrop((512, 1024), height=512, width=512),
         albu.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5)),
         ToTensorV2(),
     ]
@@ -50,11 +70,20 @@ def get_train_preprocessing():
 
 def get_inference_preprocessing():
     transforms = [
+        albu.Resize(height=1024, width=1024),
         albu.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5)),
         ToTensorV2(),
     ]
     return albu.Compose(transforms,
             additional_targets={"real": "image", "hist": "image"})
+
+
+def get_runway_preprocessing():
+    transforms = [
+        albu.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5)),
+        ToTensorV2(),
+    ]
+    return albu.Compose(transforms, additional_targets={"hist": "image"})
 
 
 class IHarmDataset(Dataset):
@@ -97,8 +126,12 @@ class IHarmDataset(Dataset):
             comp, real, mask, hist = s["image"], s["real"], s["mask"], s["hist"]
 
         if self.preprocessing:
-            s = self.preprocessing(image=comp, real=real, mask=mask, hist=hist)
-            comp, real, mask, hist = s["image"], s["real"], s["mask"], s["hist"]
+            while True:
+                # Guarnatee that there's some mask before processing!
+                s = self.preprocessing(image=comp, real=real, mask=mask, hist=hist)
+                if s["mask"].sum() > 0:
+                    comp, real, mask, hist = s["image"], s["real"], s["mask"], s["hist"]
+                    break
 
         # Mask is input, not output! Need to transpose manually
         mask = np.transpose(mask, (2, 0, 1)).float()
