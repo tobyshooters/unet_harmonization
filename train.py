@@ -33,12 +33,11 @@ def eval(net, loader, device, checkpoint_name, epoch=0):
         for batch in pbar:
             c = batch["comp"].float().to(device)
             m = batch["mask"].float().to(device)
-            # h = batch["hist"].float().to(device)
+            h = batch["hist"].float().to(device)
             y = batch["real"].float().to(device)
 
             with torch.no_grad():
-                # pred = net(c, m, h)["output"]
-                pred = net(c, m)["output"]
+                pred = net(c, m, h)["output"]
 
             total_loss += F.l1_loss(pred, y)
             pbar.update()
@@ -65,9 +64,9 @@ def train(net, device, epochs, batch_size, lr, num_workers, save_cp, checkpoint_
     dataroot = "../image_harmonization/HAdobe5k/"
     preprocessing = get_train_preprocessing()
     augmentation = get_augmentation()
-    dataset = IHarmDataset(dataroot, preprocessing, augmentation)
+    dataset = IHarmDataset(dataroot, preprocessing, augmentation, LAB=False)
 
-    print(len(dataset))
+    print("Length of dataset:", len(dataset))
     n_train = int(0.95 * len(dataset))
     train, val = random_split(dataset, [n_train, len(dataset) - n_train])
     train_loader = DataLoader(train, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=True)
@@ -100,12 +99,11 @@ def train(net, device, epochs, batch_size, lr, num_workers, save_cp, checkpoint_
         for batch in pbar:
             c = batch["comp"].float().to(device)
             m = batch["mask"].float().to(device)
-            # h = batch["hist"].float().to(device)
+            h = batch["hist"].float().to(device)
             y = batch["real"].float().to(device)
 
             # Run network!
-            # pred = net(c, m, h)["output"]
-            pred = net(c, m)["output"]
+            pred = net(c, m, h)["output"]
 
             if use_masked_loss:
                 mask = (m > 0).float()
@@ -162,10 +160,10 @@ def train(net, device, epochs, batch_size, lr, num_workers, save_cp, checkpoint_
 if __name__ == '__main__':
 
     device = "cuda:0" if torch.cuda.is_available() else "cpu"
-    init_checkpoint = "checkpoints/cp_IHarmNet_l1+style.pth"
+    init_checkpoint = "checkpoints/cp_MaskAttentionUNet_RGB_epoch_10.pth"
 
-    # net = MaskAttentionUNet(n_channels=7, n_classes=3).to(device)
-    net = IHarmNet().to(device)
+    net = MaskAttentionUNet(n_channels=7, n_classes=3).to(device)
+    # net = IHarmNet().to(device)
 
     if init_checkpoint is not None:
         print("Loading {}".format(init_checkpoint))
@@ -176,12 +174,12 @@ if __name__ == '__main__':
     try:
         train(net             = net,
               device          = device,
-              epochs          = 1000,
-              batch_size      = 4,
-              lr              = 1e-3,
+              epochs          = 10,
+              batch_size      = 8,
+              lr              = 3e-4,
               num_workers     = 4,
               save_cp         = True,
-              checkpoint_name = "IHarmNet_no_mask",
+              checkpoint_name = "MaskAttentionUNet_RGB_round2",
               use_masked_loss = True)
 
     except KeyboardInterrupt:

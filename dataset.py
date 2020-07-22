@@ -7,14 +7,15 @@ import albumentations as albu
 from albumentations.pytorch import ToTensorV2
 
 
-def post(im, resize=None, bw=False, rotate=False, name=""):
+def post(im, resize=None, bw=False, rotate=False, name="", LAB=True):
     im_ = np.transpose(im, (1, 2, 0))
     im_ = 0.5 * (im_ + 1)
     im_ = 255 * im_
     im_ = np.clip(im_, 0, 255)
     im_ = im_.astype(np.uint8)
     if not bw:
-        im_ = cv2.cvtColor(im_, cv2.COLOR_LAB2BGR)
+        color = cv2.COLOR_LAB2BGR if LAB else cv2.COLOR_RGB2BGR
+        im_ = cv2.cvtColor(im_, color)
     if bw:
         im_ = cv2.merge((im_, im_, im_))
     if resize is not None:
@@ -30,7 +31,6 @@ def runway_post(im):
     im_ = 255 * im_
     im_ = np.clip(im_, 0, 255)
     im_ = im_.astype(np.uint8)
-    im_ = cv2.cvtColor(im_, cv2.COLOR_LAB2RGB)
     return im_
 
 
@@ -99,22 +99,26 @@ class IHarmDataset(Dataset):
         self.mask_dir_path = os.path.join(self.root_dir, "masks")
 
         self.ids = os.listdir(self.comp_dir_path)
+        # self.ids = [f for f in os.listdir(self.comp_dir_path) if "a4386" in f]
 
-    def __len__(self):
+    def __len__(self): 
         return len(self.ids)
 
-    def __getitem__(self, i):
+    def __getitem__(self, i, color_transform=None):
+        if color_transform is None:
+            color_transform = self.color
+
         comp_fname = self.ids[i]
         comp = cv2.imread(os.path.join(self.comp_dir_path, comp_fname))
-        comp = cv2.cvtColor(comp, self.color)
+        comp = cv2.cvtColor(comp, color_transform)
 
         hist_fname = comp_fname.split(".")[0] + "_model_output.jpg"
         hist = cv2.imread(os.path.join(self.hist_dir_path, hist_fname))
-        hist = cv2.cvtColor(hist, self.color)
+        hist = cv2.cvtColor(hist, color_transform)
 
         real_fname = comp_fname.split("_")[0] + ".jpg"
         real = cv2.imread(os.path.join(self.real_dir_path, real_fname))
-        real = cv2.cvtColor(real, self.color)
+        real = cv2.cvtColor(real, color_transform)
 
         mask_fname = "_".join(comp_fname.split("_")[:-1]) + ".png"
         mask = cv2.imread(os.path.join(self.mask_dir_path, mask_fname))
@@ -136,3 +140,7 @@ class IHarmDataset(Dataset):
         mask = np.transpose(mask, (2, 0, 1)).float()
 
         return { "comp": comp, "real": real, "mask": mask, "hist": hist }
+
+    def get(self, i, color_transform):
+        return self.__getitem__(i, color_transform)
+

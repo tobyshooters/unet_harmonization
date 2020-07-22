@@ -18,3 +18,4 @@ future
 cffi
 ninja
 runway-python
+ipykernel

@@ -40,25 +40,23 @@ def run_color_transfer(model, og_image, og_mask, og_hist, device):
     og_h, og_w = og_image.shape[:2]
     h, w = get_rounded_image_dimensions(og_h, og_w)
 
-    # Image should be LAB, resize to multiple of 32
+    # Image should be resized to multiple of 32
     image = cv2.resize(og_image, (w, h), cv2.INTER_LINEAR)
-    image = cv2.cvtColor(image.astype(np.uint8), cv2.COLOR_RGB2LAB)
 
     # Mask should be 3D, float, resize to multiple of 32
     mask = cv2.resize(og_mask, (w, h), cv2.INTER_LINEAR)
     mask = (mask[:, :, 0] > 100).astype(np.float32)
     mask = mask[:, :, np.newaxis]
 
-    # Histogram should be LAB, resize to multiple of 32
+    # Histogram should be resized to multiple of 32
     hist = cv2.resize(og_hist, (w, h), cv2.INTER_LINEAR)
-    hist = cv2.cvtColor(hist.astype(np.uint8), cv2.COLOR_RGB2LAB)
 
-    # Normalize, to tensor
+    # Preprocess: normalize, to tensor
     s = unet_preprocess(image=image, mask=mask, hist=hist)
     c, m, h = s["image"], s["mask"], s["hist"]
     m = np.transpose(m, (2, 0, 1)).float()
 
-    # Make into batch of size 1, float, cude device
+    # Make into batch of size 1, float, change device
     c = c.unsqueeze(0).float().to(device)
     m = m.unsqueeze(0).float().to(device)
     h = h.unsqueeze(0).float().to(device)
@@ -66,7 +64,9 @@ def run_color_transfer(model, og_image, og_mask, og_hist, device):
     with torch.no_grad():
         result = model(c, m, h)
 
+    # [-1, 1] output to RGB image
     harmonized = runway_post(result["output"].detach().cpu().numpy()[0])
+
     return cv2.resize(harmonized, (og_w, og_h), cv2.INTER_LINEAR)
 
 
@@ -123,5 +123,5 @@ def harmonize(models, inputs):
 if __name__ == '__main__':
     runway.run(debug=True, model_options={
         'iharm_checkpoint': 'checkpoints/hrnet18_idih256.pth',
-        'unet_checkpoint': 'checkpoints/cp_MaskAttentionUNet_epoch_10.pth',
+        'unet_checkpoint': 'checkpoints/cp_MaskAttentionUNet_RGB_round2_epoch_10.pth',
     })
